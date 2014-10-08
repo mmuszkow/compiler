@@ -350,7 +350,7 @@ protected:
         if(peek(TYPE)) p_params();
         accept(RPARENTH);
         const Method& m = sc.getMethod(className, methodName);
-        CG_ASM("  push 0x%x", (m.local_vars.size()<<(WORD_SIZE*4)) | m.params.size()); // method args and local vars count count, used by GC
+        CG_ASM("  push method_%s_%s_tag", className.c_str(), methodName.c_str()); // method desc used by GC
         if(m.local_vars.size() > 0)
             CG_ASM("  sub esp, %d", m.local_vars.size() * WORD_SIZE); // local vars
         p_block();
@@ -365,7 +365,7 @@ protected:
     bool p_program() {
         CG_ASM("format PE console");
         CG_ASM("entry _start");
-        CG_ASM("include 'fasm\\INCLUDE\\win32a.inc'");
+        CG_ASM("include 'd:\\fasm\\INCLUDE\\win32a.inc'");
         CG_ASM("");
         CG_ASM("section '.text' code readable executable");
 
@@ -373,12 +373,16 @@ protected:
 
         CG_ASM("_start:");
         CG_ASM("  xor ebp, ebp"); // zero frame pointer
-        CG_ASM("  mov [heap_top], heap_ptr");
-        CG_ASM("  mov eax, %d", entry.attributes.size() * WORD_SIZE);
-        CG_ASM("  call gc_malloc");
-        CG_ASM("  push 0"); // argv
-        CG_ASM("  push 0"); // argc
+        CG_ASM("  push class_tags");
+        CG_ASM("  call [gc_init]");
+        CG_ASM("  add esp, %d", WORD_SIZE);
+        CG_ASM("  push %d", sc.getClassTag(entry.name));
+        CG_ASM("  push ebp");
+        CG_ASM("  call [gc_malloc]");
+        CG_ASM("  add esp, %d", 2*WORD_SIZE);
         CG_ASM("  push eax"); // pointer to class instance
+        CG_ASM("  push 0"); // argc
+        CG_ASM("  push 0"); // argv
         CG_ASM("  call %s_%s", sc.getEntryPoint().first.c_str(), sc.getEntryPoint().second.c_str());
         CG_ASM("  add esp, 12"); // pop args
         CG_ASM("  ret\n");
@@ -386,23 +390,59 @@ protected:
         while(peek(CLASS))
             p_class_def();
 
-        CG_ASM("gc_malloc:");
-        CG_ASM("  push [heap_top]");
-        CG_ASM("  add [heap_top], eax");
-        CG_ASM("  pop eax");
-        CG_ASM("  ret\n");
-
         CG_ASM("section '.data' data readable writeable");
         for(auto sIt = str_consts.begin(); sIt != str_consts.end(); sIt++) // string constants
             CG_ASM("str_const_%d db \"%s\", 0", *sIt , Token::st.get(*sIt).c_str());
-        CG_ASM("heap_top dd 0"); // heap space
-        CG_ASM("heap_ptr rd 65536");
-        CG_ASM("");
 
-        CG_ASM("section '.idata' data readable import"); // imports
-        CG_ASM("library msvcrt, 'msvcrt.dll'");
-        CG_ASM("import msvcrt, printf, 'printf', puts, 'puts', scanf, 'scanf', itoa, 'itoa', sprintf, 'sprintf'");
+        // description of classes used by GC (called tags)
+        // number of attributes nd info if they are refrences or values
+        CG_ASM("class_tags:");
+        for(auto cIt = sc.getClasses().cbegin(); cIt != sc.getClasses().cend(); cIt++) {
+            const std::string& cName = cIt->first;
+            const Class& c = cIt->second;            
+            unsigned int mask = 0;
+            for(auto aIt = c.attributes.cbegin(); aIt != c.attributes.end(); aIt++) {
+                mask <<= 1;
+                const Var& attr = aIt->second;
+                if(attr.type != "Int" && attr.type != "Bool")
+                    mask |= 1;                
+            }
+            CG_ASM("  class_%s_tag dd %u, %u", cName.c_str(), c.attributes.size(), mask);            
+        }
+
+        // description of classes methods also used by GC (called tags)
+        // number of local variables and arguments and info if they are refrences or values
+        CG_ASM("method_tags:");
+        for(auto cIt = sc.getClasses().cbegin(); cIt != sc.getClasses().cend(); cIt++) {
+            const std::string& cName = cIt->first;
+            const Class& c = cIt->second;
+            for(auto mIt = c.methods.cbegin(); mIt != c.methods.cend(); mIt++) {
+                const std::string& mName = mIt->first;
+                const Method& m = mIt->second;
+                unsigned int loc_mask = 0;
+                for(auto lIt = m.local_vars.cbegin(); lIt != m.local_vars.end(); lIt++) {
+                    loc_mask <<= 1;
+                    const Var& local = lIt->second;
+                    if(local.type != "Int" && local.type != "Bool")
+                        loc_mask |= 1;                
+                }
+                unsigned int arg_mask = 0;
+                for(auto aIt = m.params.cbegin(); aIt != m.params.end(); aIt++) {
+                    arg_mask <<= 1;
+                    const Var& arg = aIt->second;
+                    if(arg.type != "Int" && arg.type != "Bool")
+                        arg_mask |= 1;                
+                }
+                CG_ASM("  method_%s_%s_tag dd %u, %u, %u, %u", cName.c_str(), mName.c_str(),
+                    m.local_vars.size(), loc_mask, m.params.size(), arg_mask);
+            }
+        }
+
         CG_ASM("");
+        CG_ASM("section '.idata' data readable import"); // imports
+        CG_ASM("library msvcrt, 'msvcrt.dll', gc, 'gc.dll'");
+        CG_ASM("import msvcrt, printf, 'printf', puts, 'puts', scanf, 'scanf', itoa, 'itoa', sprintf, 'sprintf'");
+        CG_ASM("import gc, gc_init, 'gc_init', gc_malloc, 'gc_malloc'");
 
         return true;
     }
@@ -444,8 +484,10 @@ protected:
         accept(NEW);
         const Class& c = sc.getClass(curr().strVal());
         accept(TYPE);
-        CG_ASM("  mov eax, %d", c.attributes.size() * WORD_SIZE);
-        CG_ASM("  call gc_malloc");
+        CG_ASM("  push %d", sc.getClassTag(c.name));
+        CG_ASM("  push ebp");
+        CG_ASM("  call [gc_malloc]");
+        CG_ASM("  add esp, %d", 2*WORD_SIZE);
         for(auto aIt = c.attributes.cbegin(); aIt != c.attributes.cend(); aIt++) { // initialize attributes that are pointers to 0
             const Var& att = aIt->second;
             if(att.type != "Int" && att.type != "Bool")

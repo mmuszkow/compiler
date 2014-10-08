@@ -44,15 +44,8 @@ Int method(Int arg1, Int arg2, Int arg3) {
 # method arg3  # ebp+8  
 # ret addr     # ebp+4  # return adress to calling method
 # prev fp      # ebp    # previous frame pointer
-# method_dsc   # ebp-4  # high 16-bits is the number of method arguments, 
-                          low 16-bits is the number of locals, 
-                          this was planned to be used by the GC
-                          here will be: 0x00030003
+# method_dsc   # ebp-4  # pointer to method description used by gc
 # loc_var1     # ebp-8  # local variables
 # loc_var2     # ebp-12
 # loc_var3     # ebp-16 # here is where stack pointer (esp) points
 ```
-One big thing **missing** is the **garbage collector**. Now I'm simply allocating the new memory and not freeing it at all. 
-I was planning to implement mark & sweep GC, but my enthusiasm and fervor ended before I came to that. 
-Maybe I'll come back to that one day..
-

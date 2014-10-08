@@ -85,7 +85,7 @@ class Math {
 }
 
 // I removed the array type from the grammar to make it simpler
-class Array {
+/*class Array {
     String ptr; // this will be the pointer
     Int len;
     
@@ -104,7 +104,7 @@ class Array {
         asm("  add ebx, eax");
         asm("  mov eax, [ebx]");
     }
-}
+}*/
 
 class IO {
     // prints string to stdout with new line
@@ -133,11 +133,10 @@ class IO {
     }
     
     // returns string read from stdin
-    def String scans(Int max) {
+    def String scans() {
+        String buff = "                           ";
         String fmt = "%s";
-        asm("  mov eax, [ebp+8]");
-        asm("  call gc_malloc");
-        asm("  push eax");
+        asm("  push dword [ebp-12]"); // buff
         asm("  push dword [ebp-8]"); // fmt
         asm("  call [scanf]");
         asm("  pop eax");
